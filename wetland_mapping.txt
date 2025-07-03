@@ -1,0 +1,479 @@
+// //**Data-----------------------------------------------------------------------------------------------------
+var geometry = 
+    /* color: #d63000 */
+    /* shown: false */
+    ee.Geometry.Polygon(
+        [[[12.466493634172311, 14.656626377012337],
+          [12.466493634172311, 11.833707452355627],
+          [15.548158673234811, 11.833707452355627],
+          [15.548158673234811, 14.656626377012337]]], null, false),
+    Lake_Chad = 
+    /* color: #d63000 */
+    /* shown: false */
+    ee.Geometry.Point([14.188055572400856, 13.827301264688833])
+
+var parameter1 ={
+              SD: "2019-01-01",
+              ED: "2020-01-01",
+              GEOMETRY: geometry
+}
+var roi = parameter1.GEOMETRY
+Map.centerObject(roi,7)
+
+var s2_col = ee.ImageCollection("COPERNICUS/S2_SR")
+            .filterBounds(roi)
+            .filterDate(parameter1.SD,parameter1.ED)
+
+var s2c = ee.ImageCollection('COPERNICUS/S2_CLOUD_PROBABILITY').filterDate(parameter1.SD, parameter1.ED)
+                                                              .filterBounds(roi);
+                                                             
+function indexJoin(collectionA, collectionB, propertyName) {
+var joined = ee.ImageCollection(ee.Join.saveFirst(propertyName).apply({
+  primary: collectionA,
+  secondary: collectionB,
+  condition: ee.Filter.equals({
+    leftField: 'system:index',
+    rightField: 'system:index'})
+}));
+// Merge the bands of the joined image.
+return joined.map(function(image) {
+  return image.addBands(ee.Image(image.get(propertyName)));
+});
+}
+
+//method: Aggressively mask clouds and shadows.
+function maskS2clouds01(image) {
+  var s2c = image.select('probability');
+  var isCloud = s2c.gte(50)
+  return image.updateMask(isCloud.not())
+    .select("B.*")
+    .copyProperties(image, ["system:time_start"]);
+}
+
+// Join the cloud probability dataset to surface reflectance.
+var withCloudProbability = indexJoin(s2_col, s2c, 'cloud_probability');
+// Map the cloud masking function over the joined collection.
+var masked_01 = ee.ImageCollection(withCloudProbability.map(maskS2clouds01));
+print(masked_01,'masked_01')
+
+function mosaicByDate(imcol){
+// convert the ImageCollection into List
+var imlist = imcol.toList(imcol.size());
+// print(imlist)
+
+// Obtain the distinct image dates from the ImageCollection
+var unique_dates = imlist.map(function(im){
+  return ee.Image(im).date().format("YYYY-MM-dd");
+}).distinct();
+print(unique_dates);
+
+// mosaic the images acquired on the same date
+var mosaic_imlist = unique_dates.map(function(d){
+  d = ee.Date(d);
+  //print(d)
+  var im = imcol.filterDate(d, d.advance(1, "day")).mosaic();
+  //print(im)
+  
+  // return the mosaiced same-date images and set the time properties
+  return im.set(
+    "system:time_start", d.millis(), 
+    "system:id", d.format("YYYY-MM-dd")
+    );
+});
+return ee.ImageCollection(mosaic_imlist);
+}
+
+var s2nc_1 = mosaicByDate(masked_01);
+print(s2nc_1,'s2nc_1')
+
+var s2nc = s2nc_1
+            .map(EVI)
+            .map(NDVI)
+            .map(LSWI)
+var eelist2 = s2nc.select(['EVI','LSWI','ndvi'])
+Map.addLayer(eelist2,{},'eelist2')
+
+function LSWI(image){
+  return image.addBands(image.normalizedDifference(['B8A', 'B11']).rename("LSWI"));
+}
+
+function EVI(image){
+    var evi = image.expression('2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))', {
+    'NIR' : image.select('B8').divide(10000),
+    'RED' : image.select('B4').divide(10000),
+    'BLUE': image.select('B2').divide(10000)
+  });
+  return image.addBands(evi.rename('EVI'));
+} 
+
+function NDVI(image) {
+var ndvi = image.normalizedDifference(['B8',"B4"]);
+return image.addBands(ndvi.rename('ndvi'));
+}
+
+// //**Main-----------------------------------------------------------------------------------------------------
+////提取全年open water, inundated vegetation
+var veg = eelist2.select('EVI').mean().gte(0.1)
+var noveg = eelist2.select('EVI').mean().lt(0.1)
+
+var calculateFlood = function(image){
+  var fd = image.select(['EVI','ndvi','LSWI']).rename(['EVIf','ndvif','LSWIf']);
+  var fld = fd.select('LSWIf').add(0.05).subtract(fd.select('EVIf')).gte(0)
+  .or(fd.select('LSWIf').add(0.05).subtract(fd.select('ndvif')).gte(0)).rename('flood')
+  return  image.addBands([fld])
+}
+
+var flood = eelist2.map(calculateFlood)
+print(flood,'flood')
+// Map.addLayer(flood,{},'flood')
+
+var floodresult = flood.select('flood').max().eq(1)
+// Map.addLayer(floodresult,[],'flood',false)
+
+var floodveg = veg.updateMask(floodresult)
+var floodnoveg = noveg.updateMask(floodresult)
+
+var notfloodveg = veg.updateMask(floodresult.not())
+var notfloodnoveg = noveg.updateMask(floodresult.not())
+
+var Viz1 = {min: 0, max: 1, palette: ['00FFFF', '0000FF']};
+var Viz2 = {min: 0, max: 1, palette: ['00FFFF', '#02ff0a']};
+Map.addLayer(floodveg,Viz2,'flood wiht veg')
+Map.addLayer(floodnoveg.selfMask(),Viz1,'flood with no veg')
+print(floodnoveg,'floodnoveg')
+
+////挑选出全年只有一次灌水信号的像元删除
+var floodresultcount = flood.select('flood').map(function(img){return img.updateMask(img.select('flood'))}).count()
+var floodresultonce = floodresultcount.eq(1).updateMask(floodveg)
+Map.addLayer(floodresultonce,{min:0,max:1,palette:['ffffff','0000ff']},'floodresultonce')
+// Map.addLayer(floodresultcount,{min:0,max:50,palette:palette},'floodresultcount')
+
+var chadwetland = floodveg.updateMask(floodresultonce.eq(0))
+Map.addLayer(chadwetland,{min:0,max:1,palette:['ffffff','0000ff']},'chadwetland')
+
+var LswiMinGt0 = eelist2.select('LSWI').min().gt(0)
+var FloodVegAllyear = floodveg.updateMask(LswiMinGt0.eq(1))
+// Map.addLayer(FloodVegAllyear,{},'FloodVegAllyear')
+var ICFloodVegAllyear = eelist2.map(function(img){
+  return img.addBands(ee.Image(1).updateMask(FloodVegAllyear).rename('floodperiodallyear'))
+})//////
+
+////按月合并ICFloodVegAllyear
+var ms = ee.List.sequence(1, 12, 1) 
+var ICFloodVegAllyear_month = ee.ImageCollection(ms.map(function(m){
+  return ICFloodVegAllyear.select('floodperiodallyear').filter(ee.Filter.calendarRange(m, m, 'month')).max().set('month',m)
+
+}))
+var FloodVegAllyear_month = ICFloodVegAllyear_month.toBands().rename(['month1','month2','month3','month4','month5','month6','month7','month8','month9','month10','month11','month12'])
+print(FloodVegAllyear_month,'FloodVegAllyear_month')
+
+var FloodVegnoAllyear = floodveg.updateMask(LswiMinGt0.neq(1))
+// Map.addLayer(FloodVegnoAllyear,{},'FloodVegnoAllyear')
+var ICFloodVegnoAllyear = eelist2.map(function(img){
+  var img = img.updateMask(FloodVegnoAllyear);
+  var doy = ee.Date(img.get('system:time_start')).getRelative('day', 'year');
+  var band1 = img.select([0]);
+  var doyBand = band1.where(band1.eq(band1),doy).select([0],['doy']).uint16();
+  // var year = img.date().difference(ee.Date('1990-01-01'), 'year');
+  return img.addBands(doyBand.rename('doy0'))////ee.Image(year).float().addBands(img.addBands(ee.Image(doyBand).rename('doy')))
+})
+// Map.addLayer(ICFloodVegnoAllyear,{},'ICFloodVegnoAllyear')
+print(ICFloodVegnoAllyear,'ICFloodVegnoAllyear')
+////提取植被物候数据
+var PhenoChad = ee.Image("users/S20203213064/methane/PhenoLakeChad2019_30m")
+print(PhenoChad,'PhenoChad')
+var peakDOY = PhenoChad.select('POS2').unmask(PhenoChad.select('POS1'))/////有的后半峰只有一个的，称为POS1
+print(peakDOY,'peakDOY')
+////如果peak前没有灌水信号，那就不需要找灌水信号结束的时间///////
+////确定BeforePeak最后一次水淹信号出现的DOY/////////
+var BeforePeak = ICFloodVegnoAllyear.map(function(image){
+  var doy = image.select('doy0')
+  var va = doy.subtract(0).gte(0).and(doy.subtract(peakDOY).lte(0))  
+  var imgadd = image.select(['EVI','LSWI','ndvi','doy0']).updateMask(va).rename(['EVI1','LSWI1','ndvi1','doy1'])
+  var fld = imgadd.select('LSWI1').subtract(imgadd.select('EVI1')).gt(0)
+  .or(imgadd.select('LSWI1').subtract(imgadd.select('ndvi1')).gt(0)).rename('lastfloodDOYBeforePeak').addBands(imgadd.select('doy1').rename('doy2'))
+  var flddoy = fld.select('doy2').updateMask(fld.select('lastfloodDOYBeforePeak').eq(1))
+  return image.addBands(flddoy.rename('flddoy'))
+})
+// print(BeforePeak,'BeforePeak')
+// Map.addLayer(BeforePeak.first(),{},'BeforePeak')
+
+var lastfloodDOYBeforePeak = BeforePeak.select('flddoy').reduce(ee.Reducer.lastNonNull())
+// print(lastfloodDOYBeforePeak,'lastfloodDOYBeforePeak')
+// Map.addLayer(lastfloodDOYBeforePeak,{},'lastfloodDOYBeforePeak')
+
+////确定生长前lswi<0///////
+var noFloodBeforePeak = ICFloodVegnoAllyear.map(function(image){
+  var doy = image.select('doy0')
+  var va = doy.subtract(lastfloodDOYBeforePeak).gte(0).and(doy.subtract(peakDOY).lte(0))  
+  var imgadd = image.select(['EVI','LSWI','ndvi','doy0']).updateMask(va).rename(['EVI1','LSWI1','ndvi1','doy1'])
+  var lswilte0 = imgadd.select('LSWI1').lte(0).rename('lswilte0')
+  return image.addBands(lswilte0)
+})
+var lswilte0 = noFloodBeforePeak.select('lswilte0').max()////////******
+// print(lswilte0,'lswilte0')
+// Map.addLayer(lswilte0,{},'lswilte0')
+
+var lswigt0  = lswilte0.remap([0,1],[1,0],null,'lswilte0');//////让0等于1，1等于0
+// print(lswigt0,'lswigt0')
+// Map.addLayer(lswigt0,{},'lswigt0')
+
+////确定BeforePeak第一次lswi<0的DOY///////
+var EOFPeak = ICFloodVegnoAllyear.map(function(image){
+  var doy = image.select('doy0')
+  var va = doy.subtract(lastfloodDOYBeforePeak).gte(0).and(doy.subtract(peakDOY).lte(0))  
+  var imgadd = image.select(['EVI','LSWI','ndvi','doy0']).updateMask(va).rename(['EVI1','LSWI1','ndvi1','doy1'])
+  var fld = imgadd.select('LSWI1').lte(0).rename('firstlswiLte0DOYBeforePeak').addBands(imgadd.select('doy1').rename('doy2'))
+  var flddoy1 = fld.select('doy2').updateMask(fld.select('firstlswiLte0DOYBeforePeak').eq(1))
+  return image.addBands(flddoy1.rename('flddoy1'))
+})
+// print(EOFPeak,'EOFPeak')
+// Map.addLayer(EOFPeak.first(),{},'EOFPeak')
+  
+var firstlswiLte0DOYBeforePeak = EOFPeak.select('flddoy1').reduce(ee.Reducer.firstNonNull())
+                                       
+// print(firstlswiLte0DOYBeforePeak,'firstlswiLte0DOYBeforePeak')
+// Map.addLayer(firstlswiLte0DOYBeforePeak,{},'firstlswiLte0DOYBeforePeak')
+
+////确定EOF至第一次lswi<0时间并赋值1///////
+var FloodPeriod1 = ICFloodVegnoAllyear.map(function(image){
+  var doy = image.select('doy0')
+  var imagadd = image.addBands(lswilte0.rename('lswilte0'))
+  var va = doy.subtract(lastfloodDOYBeforePeak).gte(0).and(doy.subtract(firstlswiLte0DOYBeforePeak).lt(0))  
+  var imagadd1= imagadd.select('lswilte0').updateMask(va).rename('lswilte0_1')
+  var floodperiod1 = imagadd1.select('lswilte0_1').gt(0)
+  return image.addBands(floodperiod1.rename('floodperiod1'))
+})
+print(FloodPeriod1,'FloodPeriod1')
+// Map.addLayer(FloodPeriod1,{},'FloodPeriod1')
+
+////确定AfterPeak第一次lswi<0或者第一次灌水信号的DOY///////
+var Peak365 = ICFloodVegnoAllyear.map(function(image){
+  var doy = image.select('doy0')
+  var va = doy.subtract(peakDOY).gte(0).and(doy.subtract(365).lte(0))  
+  var imgadd = image.select(['EVI','LSWI','ndvi','doy0']).updateMask(va).rename(['EVI1','LSWI1','ndvi1','doy1'])
+  var fld = doy.eq(365).or(imgadd.select('LSWI1').lte(0)).or(imgadd.select('LSWI1').subtract(imgadd.select('EVI1')).gt(0))
+  .or(imgadd.select('LSWI1').subtract(imgadd.select('ndvi1')).gt(0)).rename('firstFloodorLswilte0AfterPeak').addBands(imgadd.select('doy1').rename('doy2'))
+  var flddoy2 = fld.select('doy2').updateMask(fld.select('firstFloodorLswilte0AfterPeak').eq(1))
+  return image.addBands(flddoy2.rename('flddoy2'))
+})
+// print(Peak365,'Peak365')
+// Map.addLayer(Peak365,{},'Peak365')
+
+var firstFloodorLswilte0AfterPeak = Peak365.select('flddoy2').reduce(ee.Reducer.firstNonNull())
+                                       
+// print(firstFloodorLswilte0AfterPeak,'firstFloodorLswilte0AfterPeak')
+// Map.addLayer(firstFloodorLswilte0AfterPeak,{},'firstFloodorLswilte0AfterPeak')
+                                       
+////确定水淹时间并赋值1///////
+var FloodPeriod = ICFloodVegnoAllyear.map(function(image){
+  var doy = image.select('doy0')
+  var imgadd = image.addBands(lswigt0.rename('lswigt0'))
+  var va = doy.subtract(lastfloodDOYBeforePeak).gte(0).and(doy.subtract(firstFloodorLswilte0AfterPeak).lt(0))  
+  var imgadd1 = imgadd.select('lswigt0').updateMask(va).rename('lswigt0_1')
+  var floodperiod = imgadd1.select('lswigt0_1').gt(0)
+  return image.addBands(floodperiod.rename('floodperiod'))
+})
+// print(FloodPeriod,'FloodPeriod')/
+// Map.addLayer(FloodPeriod,{},'FloodPeriod')
+
+////确定非水淹时间并赋值0///////
+var noFloodPeriod = ICFloodVegnoAllyear.map(function(image){
+  var doy = image.select('doy0')
+  var imgadd = image.addBands(lswilte0.rename('lswilte0'))
+  var va = doy.subtract(firstlswiLte0DOYBeforePeak).gte(0).and(doy.subtract(firstFloodorLswilte0AfterPeak).lte(0))  
+  var imgadd1 = imgadd.select('lswilte0').updateMask(va).rename('lswilte0_1')
+  var nofloodperiod = imgadd1.select('lswilte0_1').gt(0).rename('nofloodperiod_1')
+  return image.addBands(nofloodperiod.remap([0,1],[1,0],null,'nofloodperiod_1').rename('nofloodperiod'))
+})
+// print(noFloodPeriod,'noFloodPeriod')
+// Map.addLayer(noFloodPeriod,{},'noFloodPeriod')
+
+////合并已有的FloodPeriod，noFloodPeriod，floodsignYesOrNo，FloodPeriod1///////
+////然后进行波段运算，非植被生长季内，floodsignYesOrNo=1/0则结果保持不变或者FloodPeriod=1或者FloodPeriod1=1，则结果为1；如果noFloodPeriod=0，则结果为0
+var ICFloodPeriod = FloodPeriod.select('floodperiod')////.map(clip)
+var ICFloodPeriod1 = FloodPeriod1.select('floodperiod1')////.map(clip)
+var ICnoFloodPeriod = noFloodPeriod.select('nofloodperiod')////.map(clip)
+var ICfloodsignYesOrNo = flood.select('flood').map(function(img){return img.updateMask(FloodVegnoAllyear)})////.map(clip)///IC 全年有无灌水信号 
+
+print(ICFloodPeriod,'ICFloodPeriod')
+// Map.addLayer(ICfloodsignYesOrNo,{},'ICfloodsignYesOrNo')
+// Define an inner join.
+var innerJoin = ee.Join.inner();
+// Specify an equals filter for image timestamps.
+var filterTimeEq = ee.Filter.equals({
+  leftField: 'system:time_start',
+  rightField: 'system:time_start'
+});
+
+// Apply the join.
+var JoinedICFloodPeriod = innerJoin.apply(ICFloodVegnoAllyear, ICFloodPeriod, filterTimeEq);
+// // Display the join result: a FeatureCollection.
+print('JoinedICFloodPeriod', JoinedICFloodPeriod);
+
+// Map a function to merge the results in the output FeatureCollection.
+var JoinedFloodPeriod = JoinedICFloodPeriod.map(function(feature) {
+  return ee.Image.cat(feature.get('primary'), feature.get('secondary'));
+});
+
+print(JoinedFloodPeriod,'JoinedFloodPeriod')
+
+// Print the result of merging.
+// print('JoinedFloodPeriod', ee.String(JoinedFloodPeriod.first().get('system:index')).slice(0,38));
+
+// var JoinedFloodPeriod_1 = JoinedFloodPeriod.map(function(image){
+//   return image.set('system:index', ee.String(image.get('system:index')).slice(0, 38));
+// })
+var JoinedFloodPeriod_1 = ee.ImageCollection(
+  JoinedFloodPeriod.toList(JoinedFloodPeriod.size()).map(function(image) {
+    return ee.Image(image).set('system:index', ee.String(ee.Image(image).get('system:index')).slice(0, 1));
+  })
+);
+// print('JoinedFloodPeriod_1', JoinedFloodPeriod_1);
+
+// // // Apply the join.
+var JoinednoFloodPeriod = innerJoin.apply(JoinedFloodPeriod_1, ICnoFloodPeriod, filterTimeEq).map(function(feature) {
+  return ee.Image.cat(feature.get('primary'), feature.get('secondary'));
+});
+// print('JoinednoFloodPeriod', JoinednoFloodPeriod);
+
+var JoinednoFloodPeriod_1 = ee.ImageCollection(
+  JoinednoFloodPeriod.toList(JoinednoFloodPeriod.size()).map(function(image) {
+    return ee.Image(image).set('system:index', ee.String(ee.Image(image).get('system:index')).slice(0, 1));
+  })
+);
+// print('JoinednoFloodPeriod_1', JoinednoFloodPeriod_1);
+
+
+// // Apply the join.
+var JoinedFloodPeriod1 = innerJoin.apply(JoinednoFloodPeriod_1.select(['floodperiod','nofloodperiod']), ICFloodPeriod1, filterTimeEq).map(function(feature) {
+  return ee.Image.cat(feature.get('primary'), feature.get('secondary'));
+});
+print('JoinedFloodPeriod1', JoinedFloodPeriod1);
+
+var JoinedFloodPeriod1_1 = ee.ImageCollection(
+  JoinedFloodPeriod1.toList(JoinedFloodPeriod1.size()).map(function(image) {
+    return ee.Image(image).set('system:index', ee.String(ee.Image(image).get('system:index')).slice(0, 1));
+  })
+);
+print('JoinedFloodPeriod1_1', JoinedFloodPeriod1_1);
+
+// // Apply the join.
+var JoinedfloodsignYesOrNo = innerJoin.apply(JoinedFloodPeriod1_1, ICfloodsignYesOrNo, filterTimeEq).map(function(feature) {
+  return ee.Image.cat(feature.get('primary'), feature.get('secondary'));
+});
+print('JoinedfloodsignYesOrNo', JoinedfloodsignYesOrNo);
+
+var JoinedfloodsignYesOrNo_1 = ee.ImageCollection(
+  JoinedfloodsignYesOrNo.toList(JoinedfloodsignYesOrNo.size()).map(function(image) {
+    return ee.Image(image).set('system:index', ee.String(ee.Image(image).get('system:index')).slice(0, 1));
+  })  
+);
+print('JoinedfloodsignYesOrNo_1', JoinedfloodsignYesOrNo_1);
+
+////基于已有波段值，新建波段result
+// var image = JoinedfloodsignYesOrNo_1.filterDate('2019-02-06','2019-02-07').first().clip(geometry2)
+// Map.addLayer(image,{},'image')
+// print(image,'image')
+var ICResult = JoinedfloodsignYesOrNo_1.map(function(image) {
+  var floodperiod = image.select('floodperiod').unmask(2);
+  var floodperiod1 = image.select('floodperiod1').unmask(2);
+  var nofloodperiod = image.select('nofloodperiod').unmask(2);
+  var floodsignYesOrNo = image.select('flood').unmask(2);
+  
+  var image2 = ee.Image.constant(2)
+  var result1 = image2.where(floodperiod.eq(1).or(floodperiod1.eq(1)), 1);
+  var result0 = result1.where(nofloodperiod.eq(0), 0); 
+  var resultfloodsign = result0.where(result0.eq(2),floodsignYesOrNo)
+  var result = resultfloodsign.updateMask(resultfloodsign.neq(2))
+
+  // var mask = floodperiod.eq(1).or(floodperiod1.eq(1)).or(nofloodperiod.eq(0)); 
+  // var result = result0.updateMask(mask).unmask(floodsignYesOrNo);
+
+  return image.addBands(result.rename('result'))
+});
+
+print(ICResult,'ICResult')
+Map.addLayer(ICResult.select('result'),{min:0,max:2,palette:['ffffff','0000ff','000000']},'ICResult')
+Map.addLayer(ICResult,{},'ICResult')
+
+////按月合并水淹
+var ms = ee.List.sequence(1, 12, 1) 
+var ICResult_month = ee.ImageCollection(ms.map(function(m){
+  return ICResult.select('result').filter(ee.Filter.calendarRange(m, m, 'month')).max().set('month',m)
+
+}))
+
+print(ICResult_month,'ICResult_month')
+// Map.addLayer(ICResult_month,{},'ICResult_month')
+
+// var msString = ms.map(function(m) {
+//   return 'month' + ee.Number(m).toInt().format('%02d');
+// });
+    
+var ImgResult_month = ICResult_month.toBands().rename(['month1','month2','month3','month4','month5','month6','month7','month8','month9','month10','month11','month12'])
+print(ImgResult_month,'ImgResult_month')
+// Map.addLayer(ImgResult_month,{},'ImgResult_month')
+
+// // display by month
+var monthly_flood_vis = {
+  bands: ['result'],
+  min: 0,
+  max: 1,
+  palette: ['ffffff', '0905ff']/////flood\notflood 
+};
+
+// {
+// ms.evaluate(function(ds){
+//   ds.map(function(d){
+//     var img = ICResult_month.filter(ee.Filter.eq('month',d))
+//     Map.addLayer(img,monthly_flood_vis,'flood2019_'+d,false)
+//     })      
+//   })
+// }
+/////////
+var bandlist = ee.List.sequence(0,11,1)
+var bandname = ['month1','month2','month3','month4','month5','month6','month7','month8','month9','month10','month11','month12']
+
+var IC = ee.ImageCollection(bandlist.map(function (i) {
+  var roi = ImgResult_month.select([i])
+    .unmask(FloodVegAllyear_month.select([i]))
+    .rename('month')
+
+  return roi.set('month',bandname[i]);
+}));
+
+var ICmaskonceflood = IC.map(function(img){
+      // var imgadd = img.unmask(floodnoveg)
+      return img.updateMask(floodresultonce.eq(0))})
+// print(IC,'IC')
+// Map.addLayer(IC,{},'IC')
+
+print(ICmaskonceflood,'ICmaskonceflood')
+// Map.addLayer(ICmaskonceflood,{},'ICmaskonceflood')
+
+var img = ICmaskonceflood.filter(ee.Filter.eq('system:index','0'))
+print(img.toBands(),'img')
+// Map.addLayer(img.toBands().updateMask(img.toBands()),{min:0,max:1,palette: ['ffffff', '0905ff']},'flood2019_month1',true)
+// // display by month
+var monthly_flood_vis = {
+  min: 0,
+  max: 1,
+  palette: ['ffffff', '0905ff']/////flood\notflood 
+};
+
+var bandlist1 = ['0','1','2','3','4','5','6','7','8','9','10','11']
+{
+bandlist.evaluate(function(ds){
+  ds.map(function(d){
+    var img = ICmaskonceflood.filter(ee.Filter.eq('system:index',bandlist1[d]))
+    Map.addLayer(img,monthly_flood_vis,'flood2020_'+ bandname[d].toString(),true)
+    })      
+  })
+}
+
+// var batch = require('users/fitoprincipe/geetools:batch')
+// batch.Download.ImageCollection.toDrive(ICmaskonceflood, 'Chad2019', {
+//   scale: 10,
+//   region: roi
+// })
