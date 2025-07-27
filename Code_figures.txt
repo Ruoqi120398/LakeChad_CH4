@@ -1,0 +1,382 @@
+#R Code
+#Fig1a-------------------------------------------------------------------------------------
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(ggprism)
+
+# 读取 Excel 数据
+excel_file <- "Source_Data_Fig_1.xlsx"  
+data <- read_excel(excel_file, sheet = 'emission')
+
+# 假设数据包含5列：time, group, value, min, max
+data_long <- data %>%
+  gather(key = "Variable", value = "Value", -time, -group, -min, -max, -type) %>%
+  mutate(group = factor(group, levels = c("Our work", "Wetcharts", "LPJ-wsl", "ORCHIDEE-MICT","McNorton 2022")))
+data_long
+# 定义颜色
+line_colors <- c("Our work" = "#767171", "Wetcharts" = "#4b7db3", "ORCHIDEE-MICT" = "#573d9b", "LPJ-wsl" = "#ae627d","McNorton 2022" = "#e9967a")
+fill_colors <- c("Our work" = "#767171", "Wetcharts" = "#4b7db3", "ORCHIDEE-MICT" = "#573d9b", "LPJ-wsl" = "#ae627d","McNorton 2022" = "#ffffff")
+line_types <- c("Our work" = "solid", "Wetcharts" = "dashed", "ORCHIDEE-MICT" = "dashed", "LPJ-wsl" = "dashed","McNorton 2022" = "dashed")
+# 确保日期列是 Date 类型
+data_long$time <- as.Date(data_long$time)
+# 创建一个新的变量，合并 group 和 linetype，作为唯一的图例分组依据
+data_long$group_linetype <- interaction(data_long$group, data_long$type)
+data_long
+#调用 windows 的字体格式，本示例分别以 Arial 和 Times New Roman 为例进行演示
+windowsFonts(Arial = windowsFont('Arial'))
+
+
+# 绘制每组的折线图及阴影区，每组图表在同一张图上
+p <- ggplot(data_long, aes(x = time, y = Value, color = group, group = group, linetype = group)) +
+  geom_line(na.rm = TRUE,, size = 0.8) +  # 绘制折线图
+  geom_ribbon(aes(ymin = min, ymax = max, fill = group), alpha = 0.2, color = NA) +  # 绘制阴影区
+  scale_y_continuous() +
+  scale_x_date(
+    breaks = "1 year",  # 设置主刻度为每年一次
+    minor_breaks = seq(as.Date("2019-01-01"), as.Date("2022-12-01"), by = "2 months"),  # 设置次刻度为每两个月一次
+    guide = "prism_minor",
+    date_labels = "%Y"  # 设置日期标签格式为“年”
+  ) +
+  scale_color_manual(values = line_colors) +  # 指定折线颜色
+  scale_fill_manual(values = fill_colors) +  # 指定阴影颜色
+  scale_linetype_manual(values = line_types) +
+  theme_prism(border = TRUE, base_rect_size = 0.4) +  # 使用 ggprism 主题
+  coord_cartesian(clip = "off") +  # 允许图形超出坐标系的范围，不进行裁剪
+  guides(colour = guide_legend(position = "inside"), linetype = guide_legend(position = "inside")) +  # 设置图例的位置为内部
+  theme(
+    legend.position.inside = c(0.88, 0.86),
+    legend.title = element_blank(),
+    text = element_text(family = "Arial", face = "plain", size = 16),
+    axis.title.y = element_text(margin = margin(r = 21.5)),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(margin = margin(r = 15)),
+    axis.ticks.y = element_line(linewidth = 0.4),
+    axis.ticks.length = unit(-0.15, "cm"),
+    axis.ticks.x = element_line(linewidth = 0.4),
+    axis.ticks.length.x = unit(0.15, "cm"),  # 设置x轴刻度线朝外
+    legend.key.width = unit(0.8, "cm"),  # 调整图例宽度
+    legend.key.height = unit(0.4, "cm"),  # 调整图例项的高度
+    legend.text = element_text(margin = margin(r = 1))  # 减小标签右侧间距
+  )
+
+# 打印图形
+print(p)
+
+# 导出为 PNG 图片
+ggsave(
+  filename = "emissionmodel0312.tif",
+  plot = p,
+  width = 21.5,
+  height = 11,
+  dpi = 600,
+  units = "cm"
+)
+
+#使用 gg.gap 截断坐标轴
+#在 gg.gap() 中指定 ggplot2 的作图对象，并添加参数截断坐标轴
+#参数中，segments 用于截断坐标轴，rel_heights 缩放截图，tick_width 用于重新指定显示的刻度轴标签，ylim 指定刻度轴范围
+# library(gg.gap)
+# 
+# #截成两段
+# gg.gap(plot = p, segments = c(15, 65), rel_heights = c(0.7, 0, 0.2), tick_width = c(5, 10), ylim = c(0, 90))
+#Fig1b---------------------------------------------------------------------------------------------------------------------------------
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(ggprism)
+library(showtext)
+
+showtext_auto()
+font_add("Arial", "arial.ttf")
+
+# 读取数据
+excel_file <- "Source_Data_Fig_1.xlsx" 
+data <- read_excel(excel_file, sheet = 'wetland area&pre')
+
+# 整理数据
+data_long <- data %>%
+  pivot_longer(cols = c(value), names_to = "Variable", values_to = "Value") %>%
+  mutate(group = factor(group, levels = c("Pre", "Our work","LPJ", "Peng")),
+         time = as.Date(time))
+data_long$group_linetype <- interaction(data_long$group, data_long$type)
+
+# 分组处理
+data_left <- data_long %>% filter(group %in% c("Peng", "LPJ","Our work"))    # 左轴: Peng, LPJ
+data_right <- data_long %>% filter(group == "Pre")                # 右轴: Pre
+
+# 颜色、线型
+line_colors <- c(
+  "Our work" = "#767171",
+  "Peng" = "#573d9b", 
+  "LPJ" = "#ae627d", 
+  "Pre" = "#E7CF8A"
+)#"Wetcharts" = "#4b7db3",
+fill_colors <- c(
+  "Our work" = "#ffffff",
+  "Peng" = "#573d9b",
+  "LPJ" = "#ffffff"
+)#"Wetcharts" = "#4b7db3",
+line_types <- c(
+  "Peng" = "dashed",
+  "Our work" = "solid",
+  "LPJ" = "dashed", 
+  "Pre" = "solid"
+)#"Wetcharts" = "dashed",
+legend_labels <- c(
+  "Pre" = "Precipitation",
+  "Our work" = "Our work (satellite-based) inundation",
+  "LPJ" = "LPJ-wsl inundation",
+  "Peng" = "ORCHIDEE-MICT inundation"
+
+)
+
+# 降水缩放
+scale_pre_to_left <- function(x) (x / 600) * (15-0) +0 # 250毫米 -> 10 (左轴最大值)
+
+
+data_right <- data_right %>%
+  mutate(Value_scaled = scale_pre_to_left(Value))
+
+# 绘图
+p <- ggplot() +
+  # Peng/LPJ 左轴曲线和阴影
+  geom_line(data = data_left, aes(x = time, y = Value, color = group, linetype = group), size = 0.8, na.rm = TRUE) +
+  geom_ribbon(data = data_left, aes(x = time, ymin = min, ymax = max, fill = group), alpha = 0.2, inherit.aes = FALSE,show.legend = FALSE) +
+  
+  # Pre 右轴曲线
+  geom_line(data = data_right, aes(x = time, y = Value_scaled, color = group, linetype = group), size = 0.8, na.rm = TRUE) +
+  
+  scale_y_continuous(
+    name = expression(Area~(10^3~km^2)),
+    limits = c(0, 15),
+    breaks = seq(0, 15, 2),
+    sec.axis = sec_axis(~ (. - 0) / (15-0) * 600, name = "Precipitation (mm)", breaks = seq(0, 600, 200))
+  ) +
+  scale_x_date(
+    breaks = "1 year",
+    minor_breaks = seq(as.Date("2019-01-01"), as.Date("2022-12-01"), by = "2 months"),
+    guide = "prism_minor",
+    date_labels = "%Y"
+  ) +
+  scale_color_manual(values = line_colors, labels = legend_labels) +
+  scale_fill_manual(values = fill_colors, labels = legend_labels) +
+  scale_linetype_manual(values = line_types, labels = legend_labels) +
+  theme_prism(border = TRUE, base_rect_size = 0.4) +
+  coord_cartesian(clip = "off") +
+  theme(
+    legend.position = c(0.75, 0.8),
+    legend.title = element_blank(),
+    text = element_text(family = "Arial", face = "plain", size = 47),
+    axis.title.y = element_text(margin = margin(r = 21.5)),
+    axis.title.y.right = element_text(margin = margin(l = 10)),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(margin = margin(r = 15)),
+    axis.ticks.y = element_line(linewidth = 0.4),
+    axis.ticks.length = unit(-0.15, "cm"),
+    axis.ticks.x = element_line(linewidth = 0.4),
+    axis.ticks.length.x = unit(0.15, "cm"),
+    legend.key.width = unit(0.8, "cm"),
+    legend.key.height = unit(0.4, "cm"),
+    legend.text = element_text(margin = margin(r = 1))
+  )
+
+# 输出图
+print(p)
+
+ggsave(
+  filename = "inudation_data.tif",
+  plot = p,
+  width = 21.5,
+  height = 5.25,
+  dpi = 300,
+  units = "cm"
+)
+#Fig1c--------------------------------------------------------------------------------------------------------
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(ggprism)
+library(showtext) # 用于引入自定义字体
+showtext_auto()   # 自动启用showtext
+
+# 导入字体
+font_add("Arial", "arial.ttf") # 确保系统中存在arial.ttf字体文件
+
+# 读取 Excel 数据
+excel_file <- "Source_Data_Fig_1.xlsx" 
+data <- read_excel(excel_file, sheet = 'waterlevel')
+
+# 确保 group 是有序因子
+data_long <- data %>%
+  mutate(group = factor(group, levels = c("Site1", "Site2", "Site3")))
+
+# 转换日期列
+data_long$time <- as.Date(data_long$time)
+
+# 定义颜色、线型
+line_colors <- c("Site1" = "#59A599", "Site2" = "#59A599", "Site3" = "#59A599")
+line_types <- c("Site1" = "solid", "Site2" = "dashed", "Site3" = "dotted")
+
+# 自定义图例标签
+legend_labels <- c(
+  "Site1" = "Water level of site 1",
+  "Site2" = "Water level of site 2",
+  "Site3" = "Water level of site 3"
+)
+# 设置 windows 字体
+# windowsFonts(Arial = windowsFont('Arial'))
+
+# 缩放函数（将 Pre 的值从 0–250 映射到 279–288）
+scale_pre_to_left <- function(x) (x / 250) * (288 - 279) + 279
+scale_left_to_pre <- function(x) (x - 279) / (288 - 279) * 250
+
+# 添加 value_scaled 列，只有 Pre 做缩放
+data_long <- data_long %>%
+  mutate(value_scaled = ifelse(group == "Pre", scale_pre_to_left(value), value))
+
+
+# 画图
+p <- ggplot(data_long, aes(x = time)) +
+  geom_line(aes(y = value_scaled, color = group, linetype = group), size = 0.8, na.rm = TRUE) +
+  scale_y_continuous(
+    name = "Water Level (m)",
+    limits = c(279, 288)
+  ) +
+  scale_x_date(
+    breaks = "1 year",
+    minor_breaks = seq(as.Date("2019-01-01"), as.Date("2022-12-01"), by = "2 months"),
+    guide = "prism_minor",
+    date_labels = "%Y"
+  ) +
+  scale_color_manual(values = line_colors, labels = legend_labels) +
+  scale_linetype_manual(values = line_types, labels = legend_labels) +
+  theme_prism(border = TRUE, base_rect_size = 0.4) +
+  coord_cartesian(clip = "off") +
+  # guides(
+  #   colour = guide_legend(position = "inside", ncol = 2),
+  #   linetype = guide_legend(position = "inside")
+  # # 图例分为两列
+  # ) +
+  theme(
+    # legend.position.inside = c(0.78, 0.86),
+    legend.position = "none",
+    legend.title = element_blank(),
+    text = element_text(family = "Arial", face = "plain", size = 47),
+    axis.title.y = element_text(margin = margin(r = 21.5)),
+    axis.title.y.left = element_text(margin = margin(l = 10)),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(margin = margin(r = 15)),
+    axis.ticks.y = element_line(linewidth = 0.4),
+    axis.ticks.length = unit(-0.15, "cm"),
+    axis.ticks.x = element_line(linewidth = 0.4),
+    axis.ticks.length.x = unit(0.15, "cm"),
+    legend.key.width = unit(0.8, "cm"),
+    legend.key.height = unit(0.4, "cm"),
+    legend.text = element_text(margin = margin(r = 1))
+  )
+
+# 输出图
+print(p)
+
+#Python Code
+#Fig2a，b-------------------------------------------------------------------------------------
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# 读取数据
+df = pd.read_excel('Source_Data_Fig_2.xlsx', sheet_name='4y')
+df_year = df.reset_index(drop=True)
+
+# 绘图
+width_cm = 4.7
+height_cm = 7
+plt.figure(figsize=(width_cm / 2.54, height_cm / 2.54))
+plt.rcParams['font.family'] = 'Arial'  # 设置英文字体
+plt.rcParams['font.size'] = 9
+
+plt.plot(df_year['precip'], df_year['wetland'], ms = 3, marker='o', linestyle='-', color='#333f50')
+plt.xlabel('Precipitation (mm)')
+plt.ylabel('Wetland area (10$^{3}$ km$^{2}$)')
+# plt.ylabel('CH$_4$ emission (Tg month$^{-1}$)')
+
+plt.tick_params(width=0.5)
+# 设置边框线宽
+for spine in plt.gca().spines.values():
+    spine.set_linewidth(0.5)
+
+# 设置刻度线宽
+plt.tick_params(width=0.5)
+# 设置 y 轴范围
+plt.ylim(top=12)
+plt.savefig('Fig2a.png', dpi=300, bbox_inches='tight')
+plt.show()
+#Fig2c-------------------------------------------------------------------------------------
+
+#Fig3f--------------------------------------------------------------------------------------
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# 读取 Excel 数据
+df = pd.read_excel("Source_Data_Fig_3.xlsx", sheet_name='4y')
+# 日期转化
+df['time'] = pd.to_datetime(df['time'])
+df['month'] = df['time'].dt.strftime('%b')  # 如 'May', 'Jun'
+
+# 指定月份顺序（从 May 到 Apr）
+month_order = ['May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct',
+               'Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Apr']
+df['month'] = pd.Categorical(df['month'], categories=month_order, ordered=True)
+
+# 按月平均
+df_avg = df.groupby('month', sort=False)[['EVI', 'vwArea', 'owArea', 'ow_exp']].mean().reset_index()
+
+# 创建图
+# 全局设置字体
+plt.rcParams["font.family"] = "Arial"
+plt.rcParams["font.size"] = 11.5
+
+fig, ax1 = plt.subplots(figsize=(6.7/2.54, 15/2.54))
+ax2 = ax1.twiny()  # 顶部 x 轴
+
+# ====== 底部 x 轴（vwArea & owArea）======
+ax1.plot(df_avg['vwArea'], df_avg['month'], label='vwArea', color='#00b050')
+ax1.plot(df_avg['owArea'], df_avg['month'], label='owArea', color='#0384b8')
+# ax1.set_xlabel('Area (10$^{3}$ km$^{2}$)')
+ax1.set_xlim(0, 6.1)
+ax1.invert_yaxis()  # 让 May 在上面，Apr 在下面
+
+# ====== 顶部 x 轴（EVI & ow_exp）======
+ax2.plot(df_avg['EVI'], df_avg['month'], label='EVI', color='#00b050', linestyle='--')
+ax2.plot(df_avg['ow_exp'], df_avg['month'], label='ow_exp', color='#b78c70', linestyle='--')
+ax2.set_xlabel('Enhanced Vegetation Index')
+ax2.set_xlim(0, 0.6)
+
+# 设置 y 轴标签
+# ax1.set_ylabel('Month')
+ax1.set_yticks(range(len(month_order)))
+ax1.set_yticklabels(month_order)
+ax1.tick_params(width=0.5)
+ax2.tick_params(width=0.5)
+# 设置边框粗细为 0.75 磅
+for spine in ax1.spines.values():
+    spine.set_linewidth(0.5)
+
+for spine in ax2.spines.values():
+    spine.set_linewidth(0.5)
+    spine.set_linestyle('--')  # 虚线
+
+# 隐藏 ax2 原有的 top 边框
+ax2.spines['top'].set_visible(False)
+
+# 合并图例
+lines1, labels1 = ax1.get_legend_handles_labels()
+lines2, labels2 = ax2.get_legend_handles_labels()
+# ax1.legend(lines1 + lines2, labels1 + labels2, loc='lower center', ncol=4)
+
+plt.tight_layout()
+plt.savefig('Figure3f.png', dpi=300, bbox_inches='tight', transparent=True)
+plt.show()
